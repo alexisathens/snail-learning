@@ -3,11 +3,14 @@ set.seed(0)
 
 library(raster) #geospatial
 library(rgdal) #geospatial
-library(dismo) #species distribution modeling
+library(dismo) #species distribution modeling, randomPoints
 library(maptools) #plot spatial data
 library(sp) #spatial stuff
 library(mgcv) #GAMs
 library(randomForest) #random forests
+#library(lattice) #overlaying grid
+library(geosphere) #distm function
+library(ggplot2)
 
 #========================= Data Manipulation =============================
 #import and clean data
@@ -64,6 +67,7 @@ background <- randomPoints(mask = mask,     #provides resolution of sampling poi
 colnames(background) <- c("Longitude","Latitude")
 
 #plot the base map
+data(wrld_simpl)
 plot(wrld_simpl, 
      xlim = c(min.lon, max.lon),
      ylim = c(min.lat, max.lat),
@@ -92,31 +96,65 @@ dat <- data.frame(cbind(y, rbind(presence, absence)))
 
 #======
 #explore colinearity
-pairs(dat[,2:5], cex=0.1, fig=TRUE)
+#pairs(dat[,2:5], cex=0.1, fig=TRUE)
 
 
 
 #========================= Machine Learning Methods =============================
-#k-fold cv function
+
+#===== classify observations into blocks
+coords <- rbind(snail,background) #coordinates of all points
+
+#define many blocks
+lon <- seq(from=min.lon,to=max.lon,length.out=100)
+lat <- seq(from=min.lat,to=max.lat,length.out=45)
+centroids <- expand.grid(lon=lon,lat=lat)
+centroids$ID <- 1:nrow(centroids)
+
+#find nearest centroid for each observation
+coords$Block <- NA
+for(i in 1:nrow(coords)){
+  ind <- which(distm(coords[i,1:2],centroids[,1:2])==min(distm(coords[i,1:2],centroids[,1:2])))
+  coords[i,"Block"] <- ind
+}
+
+#====== remove sparse blocks
+#count number of points in each group
+centroids$count <- NA 
+for(i in 1:nrow(centroids)){
+  centroids[i,"count"] <- sum(coords$Block==i)
+}
+
+#make list of centroids to be removed
+rem <- which(centroids$count<=2)
+centroids <- centroids[-rem,] #remove centroids with few observations
+centroids$ID <- 1:nrow(centroids) #rename centroid rows
+nblocks <- nrow(centroids)
+
+#repeat blocking
+for(i in 1:nrow(coords)){
+  ind <- which(distm(coords[i,1:2],centroids[,1:2])==min(distm(coords[i,1:2],centroids[,1:2])))
+  coords[i,"Block"] <- ind
+}
+
+#plot the classifications
+gg <- ggplot(coords, aes(x=Longitude,y=Latitude,label=Block)) + 
+  geom_text(check_overlap = TRUE)
+gg
+
+#now have 116 blocks containing an average of 7 observations
+#with min 3 observations, median 4 obs, max 40 obs
+
+#====== sample from defined blocks
+#randomly sample blocks
 k <- 10
-#samp <- sample(1:k, size=nrow(dat), replace=T) #but data is spatial...
-
-#spatial clustering or deterministic lon/lat splits?
-#look at quantiles of lon/lat data
-coords <- rbind(snail,background)
-
-splits <- raster::quantile(coords$Longitude,probs=seq(from=0,to=1,by=1/k))
-splits <- splits[2:k] #remove 0 and 100th quantile
-abline(v=splits,col="red",lty=3) 
-#doesn't work because too thin of sections around high snail concentrations
-
-#k-means spatial clustering method
-k.means <- kmeans(coords, k, nstart=20)
+#samp <- sample(1:k, size=nblocks, replace=F)
 
 
-#random forest
-model <- y ~ bio1 + bio2 + bio3 + bio4 + bio5 + bio6 + bio7 + bio8 + bio9 + bio10 + bio11 +
-  bio12 + bio13 + bio14 + bio15 + bio16 + bio17
 
 
+
+#====== random forest
+#model <- y ~ bio1 + bio2 + bio3 + bio4 + bio5 + bio6 + bio7 + bio8 + bio9 + bio10 + bio11 +
+#  bio12 + bio13 + bio14 + bio15 + bio16 + bio17
 
