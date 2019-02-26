@@ -11,10 +11,13 @@ library(randomForest) #random forests
 library(geosphere) #distm function
 library(ggplot2) #plot graphs
 library(leaps) #forward selection
+#library(caret) #train function
+#library(MASS) #stepAIC function
 library(splines) #ns function in GAM
 library(glmnet) #lasso
 library(pROC) #ROC curves
 
+library(jagsUI) #JAGS
 #========================= Data Manipulation =============================
 #import and clean data
 setwd("~/Documents/UF/Fletcher Lab/SnailModel")
@@ -26,9 +29,11 @@ full <- full[,1:19]
 #remove faulty observations
 full <- full[-which(full$State=="PR"),] #remove 2 observations from Puerto Rico
 full <- full[-which(full$State=="AZ"),] #remove 1 observation from Arizona
+#full <- full[-which(full$State=="AZ"),] #remove x observations from Texas (read lit)
 
 #subset into coordinates
 snail <- full[,c("Longitude","Latitude")]
+#colnames(snail)
 
 #========
 #download bioclim data
@@ -101,7 +106,7 @@ y <- c(rep(1, nrow(presence)), rep(0, nrow(absence))) #binary response
 y <- factor(y) #binary classification
 
 
-#========================= Spatial Blocking =============================
+#========================= Machine Learning Methods =============================
 
 #===== classify observations into blocks
 set.seed(0)
@@ -172,8 +177,6 @@ for(i in 1:nrow(coords)){
 folds.obs <- coords$Fold #each observation classified into single fold
 
 
-#========================= Machine Learning Methods =============================
-
 #===== simple logistic regression
 set.seed(0)
 val.errors <- rep(NA, k)
@@ -224,7 +227,8 @@ opt.pred #optimal to use 14/19 predictors
 avg.val.errors[opt.pred] #misclassification rate of 11.11%
 
 
-#====== get best predictors
+#what are these predictors? which are the best?
+
 fit.fwd <- regsubsets(y~., data=dat, nvmax=ncol(dat), method="forward")
 fwd.sum <- summary(fit.fwd)
 fwd.sum$rsq # Rsq increases from 48.9% with one var to 58.7% with 17 best/all vars included
@@ -233,46 +237,18 @@ plot(fwd.sum$rsq, xlab="Number of vars", ylab="Rsq", type="l")
 points(opt.pred, fwd.sum$rsq[opt.pred], col="red", cex=2, pch=20)
 
 
-#====== lasso shrinkage method
-set.seed(0)
-val.errors <- rep(NA, k)
-pred.vals <- actual.vals <- numeric()
-grid=10^seq(10,-2,length=100) #lambda values for lasso
-
-for(i in 1:k){
-  lasso.fit <- glmnet(x=as.matrix(dat[folds.obs!=i,]),y=as.matrix(y[folds.obs!=i]), alpha=1,
-                      lambda=grid) #calculate with many tuning parameters
-  min.lambda <- min(lasso.fit$lambda)
-  pred <- predict(lasso.full, s=min.lambda, newx=as.matrix(dat[folds.obs==i,]))
-  pred <- ifelse(pred>0.5,1,0) #classify to presence (1) if probability > 0.5
-  val.errors[i] <- sum(I(pred != y[folds.obs==i]))/length(pred) #prob of misclassifying
-  
-  #for roc curve
-  pred.vals <- c(pred.vals, pred)
-  actual.vals <- c(actual.vals, y[folds.obs==i])
-}
-lasso.misclass <- mean(val.errors) 
-lasso.misclass #misclassified observations 12.3% of time
-
-plot(lasso.fit) #see effect of different tuning parameters
-
-lasso.roc <- roc(as.numeric(pred.vals), as.numeric(actual.vals))
-plot(lasso.roc)
-lasso.roc$auc #0.8689
-
-
 #===== GAM
 set.seed(0)
 
-#==natural splines for single best predictor
+#==natural splines for best predictor
 val.errors <- rep(NA, k)
 pred.vals <- actual.vals <- numeric()
 
 for(i in 1:k){
-  #fit natural splines for single best predictors
+  #fit natural splines for 5 best predictors
   gam.fit.1 <- gam(y[folds.obs!=i]~bio1+bio2+bio4+bio5+bio6+bio8+bio9+bio10+bio11+bio12+
-                     bio13+bio14+bio15+bio16+bio17+ns(bio18,5)+bio19, family="binomial", 
-                   data=dat[folds.obs!=i,])
+                   bio13+bio14+bio15+bio16+bio17+ns(bio18,5)+bio19, family="binomial", 
+                 data=dat[folds.obs!=i,])
   pred <- predict(gam.fit.1, newdata=dat[folds.obs==i,3:19], type="response") #group membership probs
   pred <- ifelse(pred>0.5,1,0) #classify to presence (1) if probability > 0.5
   val.errors[i] <- sum(I(pred != y[folds.obs==i]))/length(pred) #prob of misclassifying
@@ -388,6 +364,103 @@ plot(forest.roc)
 forest.roc$auc #0.8362
 
 
+#====== lasso shrinkage method
+set.seed(0)
+val.errors <- rep(NA, k)
+pred.vals <- actual.vals <- numeric()
+grid=10^seq(10,-2,length=100) #lambda values for lasso
+
+for(i in 1:k){
+  lasso.fit <- glmnet(x=as.matrix(dat[folds.obs!=i,]),y=as.matrix(y[folds.obs!=i]), alpha=1,
+                       lambda=grid) #calculate with many tuning parameters
+  min.lambda <- min(lasso.fit$lambda)
+  pred <- predict(lasso.full, s=min.lambda, newx=as.matrix(dat[folds.obs==i,]))
+  pred <- ifelse(pred>0.5,1,0) #classify to presence (1) if probability > 0.5
+  val.errors[i] <- sum(I(pred != y[folds.obs==i]))/length(pred) #prob of misclassifying
+  
+  #for roc curve
+  pred.vals <- c(pred.vals, pred)
+  actual.vals <- c(actual.vals, y[folds.obs==i])
+}
+lasso.misclass <- mean(val.errors) 
+lasso.misclass #misclassified observations 12.3% of time
+
+plot(lasso.fit) #see effect of different tuning parameters
+
+lasso.roc <- roc(as.numeric(pred.vals), as.numeric(actual.vals))
+plot(lasso.roc)
+lasso.roc$auc #0.8689
+
+
+#====== Bayesian binary probit
+prob.fit <- glm(y~., family=binomial(link="probit"), 
+                dat=dat[,3:19]) #all but coords
+#for k-fold: y[folds.obs!=i] & dat=dat[folds.obs!=i,3:19]
+
+sum.prob <- summary(prob.fit)
+#finds predictors bio5, bio12, bio14, bio15, bio16, bio18, bio19 to be significant at alpha=0.05
+
+#run JAGS
+set.seed(0)
+nobs <- length(dat)
+
+#MCMC settings 
+ni <- 10000 #number of iterations
+nt <- 5 #interval to thin 
+nb <- 5000#number of iterations to discard as burn-in
+nc <- 3 #number of chains
+
+#set parameters to monitor
+params=c("b5","b12", "b14", "b15", "b16", "b18", "b19")
+
+#set initial values for the y's
+yinit=as.numeric(y)
+yinit[]=NA
+inits<-function(){
+  list(y=yinit)
+}
+
+#run the model
+#setwd('U:\\uf\\courses\\bayesian course\\2016\\detection limit\\jags')
+model.j=jags(model.file="snail_JAGS.R",
+            parameters.to.save=params,inits=inits,
+            data=list(y=as.numeric(y), x1=dat$bio5,
+                      nobs=nrow(dat)),
+            n.chains=nc,n.burnin=nb,n.iter=ni,n.thin=nt,DIC=TRUE)
+
+#, x2=dat$bio12, x3=dat$bio14,x4=dat$bio15, x5=dat$bio16, x6=dat$bio18, x7=dat$bio19,
+
+
+#======
+
+set.seed(0)
+val.errors <- rep(NA, k)
+pred.vals <- actual.vals <- numeric()
+
+for(i in 1:k){
+  glm.fit <- glm(y[folds.obs!=i]~., family="binomial", dat=dat[folds.obs!=i,3:19]) #all but coords
+  pred <- predict(glm.fit, newdata=dat[folds.obs==i,3:19], type="response") #group membership probs
+  pred <- ifelse(pred>0.5,1,0) #classify to presence (1) if probability > 0.5
+  val.errors[i] <- sum(I(pred != y[folds.obs==i]))/length(pred) #prob of misclassifying
+  
+  #for roc curve
+  pred.vals <- c(pred.vals, pred)
+  actual.vals <- c(actual.vals, y[folds.obs==i])
+}
+glm.misclass <- mean(val.errors)
+glm.misclass #misclassified observations 12% of time
+
+glm.roc <- roc(as.numeric(pred.vals), as.numeric(actual.vals))
+plot(glm.roc)
+glm.roc$auc #0.8713
+
+
+
+
+
+
+
+
 #====== plot ROC curves
 plot(glm.roc, col = 1, lty = 2, main = "ROC")
 plot(gam.roc.3, col = 2, lty = 3, add = TRUE)
@@ -405,7 +478,7 @@ glm.raster <- exp(glm.raster) / (1 + exp(glm.raster))
 plot(glm.raster, xlab = "Longitude", ylab = "Latitude", 
      main="Projected distribution of apple snail")
 
-#====== plot best predictors
+#====== plot best predictor
 plot(bioclim.dat[[16]], main="Precipitation of warmest quarter") #plot bio18
 points(snail$Longitude, snail$Latitude, col='blue', pch=20, cex=0.75) #add observations
 
@@ -414,4 +487,5 @@ points(snail$Longitude, snail$Latitude, col='blue', pch=20, cex=0.75) #add obser
 
 plot(bioclim.dat[[11]], main="Precipitation of wettest month") #plot bio13
 points(snail$Longitude, snail$Latitude, col='blue', pch=20, cex=0.75) #add observations
+
 
