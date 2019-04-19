@@ -395,10 +395,8 @@ lasso.roc$auc #0.8689
 #====== Bayesian binary probit
 prob.fit <- glm(y~., family=binomial(link="probit"), 
                 dat=dat[,3:19]) #all but coords
-#for k-fold: y[folds.obs!=i] & dat=dat[folds.obs!=i,3:19]
 
 sum.prob <- summary(prob.fit)
-#finds predictors bio5, bio12, bio14, bio15, bio16, bio18, bio19 to be significant at alpha=0.05
 
 #run JAGS
 set.seed(0)
@@ -421,43 +419,11 @@ inits<-function(){
 }
 
 #run the model
-#setwd('U:\\uf\\courses\\bayesian course\\2016\\detection limit\\jags')
 model.j=jags(model.file="snail_JAGS.R",
             parameters.to.save=params,inits=inits,
             data=list(y=as.numeric(y), x1=dat$bio5,
                       nobs=nrow(dat)),
             n.chains=nc,n.burnin=nb,n.iter=ni,n.thin=nt,DIC=TRUE)
-
-#, x2=dat$bio12, x3=dat$bio14,x4=dat$bio15, x5=dat$bio16, x6=dat$bio18, x7=dat$bio19,
-
-
-#======
-
-set.seed(0)
-val.errors <- rep(NA, k)
-pred.vals <- actual.vals <- numeric()
-
-for(i in 1:k){
-  glm.fit <- glm(y[folds.obs!=i]~., family="binomial", dat=dat[folds.obs!=i,3:19]) #all but coords
-  pred <- predict(glm.fit, newdata=dat[folds.obs==i,3:19], type="response") #group membership probs
-  pred <- ifelse(pred>0.5,1,0) #classify to presence (1) if probability > 0.5
-  val.errors[i] <- sum(I(pred != y[folds.obs==i]))/length(pred) #prob of misclassifying
-  
-  #for roc curve
-  pred.vals <- c(pred.vals, pred)
-  actual.vals <- c(actual.vals, y[folds.obs==i])
-}
-glm.misclass <- mean(val.errors)
-glm.misclass #misclassified observations 12% of time
-
-glm.roc <- roc(as.numeric(pred.vals), as.numeric(actual.vals))
-plot(glm.roc)
-glm.roc$auc #0.8713
-
-
-
-
-
 
 
 
